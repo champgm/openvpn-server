@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'OpenVPN Server Setup using CloudFormation'
+
+Parameters:
+  InstanceType:
+    Type: String
+    Description: EC2 instance type
+    AllowedValues: [t2.micro, t3.micro, t3a.micro, t2.small, t3.small, t3a.small]
+    ConstraintDescription: Must be a valid EC2 instance type.
+    Default: t2.micro
+
+  KeyPairName:
+    Description: Name of an existing EC2 KeyPair to SSH into the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+    Default: vpn-west-2
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/canonical/ubuntu/server/jammy/stable/current/amd64/hvm/ebs-gp2/ami-id'
+
+Resources:
+  OpenVPNServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      ImageId: !Ref LatestAmiId
+      SecurityGroupIds:
+        - !Ref OpenVPNSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install -y wget
+          wget https://git.io/vpn -O openvpn-install.sh
+          chmod +x openvpn-install.sh
+          ./openvpn-install.sh --auto
+
+  OpenVPNSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable VPN and SSH access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 1194
+          ToPort: 1194
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  InstancePublicIP:
+    Description: Public IP address of the OpenVPN server
+    Value: !GetAtt OpenVPNServer.PublicIp
+  InstanceID:
+    Description: Instance ID of the OpenVPN server
+    Value: !Ref OpenVPNServer
+  ConnectionInstructions:
+    Description: How to connect to the server
+    Value: !Sub |
+      SSH to your instance using:
+      ssh -i <YourPrivateKey.pem> ubuntu@${OpenVPNServer.PublicIp}
