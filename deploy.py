@@ -112,7 +112,7 @@ def deploy_cloudformation_stack(
     "--instance-type",
     required=True,
     help="Instance type for the EC2 instance, see https://aws.amazon.com/ec2/instance-types/",
-    default="t3a.micro",
+    default="t3a.small",
 )
 def main(stack_name: str, key_pair_name: str, instance_type: str, region: str):
     deploy_cloudformation_stack(stack_name, key_pair_name, instance_type, region)

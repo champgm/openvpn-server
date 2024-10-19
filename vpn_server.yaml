@@ -6,7 +6,7 @@ Parameters:
     Type: String
     Description: EC2 instance type
     AllowedValues: [t2.micro, t3.micro, t3a.micro, t2.small, t3.small, t3a.small]
-    Default: t3a.micro
+    Default: t3a.small
 
   KeyPairName:
     Description: Name of an existing EC2 KeyPair to SSH into the instance
@@ -26,23 +26,41 @@ Resources:
           default:
             - install_openvpn
             - create_ovpn_script
+            - configure_shadowsocks
+            - create_shadowsocks_script
         install_openvpn:
           packages:
             apt:
               wget: []
               openvpn: []
               easy-rsa: []
+              stunnel4: []
+              shadowsocks-libev: []
           commands:
             01_download_openvpn_script:
-              command: "wget https://git.io/vpn -O /tmp/openvpn-install.sh && chmod +x /tmp/openvpn-install.sh"
+              command: |
+                wget https://git.io/vpn -O /tmp/openvpn-install.sh
+                sed -i 's/protocol=udp/protocol=tcp/' /tmp/openvpn-install.sh
+                sed -i 's/port="1194"/port="443"/' /tmp/openvpn-install.sh
+                chmod +x /tmp/openvpn-install.sh
             02_run_openvpn_installer:
-              command: "/tmp/openvpn-install.sh --auto"
+              command: "/tmp/openvpn-install.sh --auto --protocol tcp --port 443"
+            03_optimize_openvpn_config:
+              command: |
+                echo 'sndbuf 393216' >> /etc/openvpn/server/server.conf
+                echo 'rcvbuf 393216' >> /etc/openvpn/server/server.conf
+                echo 'mssfix 1350' >> /etc/openvpn/server/server.conf
+                echo 'tun-mtu 1500' >> /etc/openvpn/server/server.conf
+                systemctl restart openvpn-server@server.service
         create_ovpn_script:
           files:
             "/usr/local/bin/create-ovpn-client.sh":
               content: |
                 #!/bin/bash
                 new_client () {
+                    local protocol="$1"
+                    local port="$2"
+                    local config_suffix="$3"
                     {
                     cat /etc/openvpn/server/client-common.txt
                     echo "<ca>"
@@ -57,8 +75,10 @@ Resources:
                     echo "<tls-crypt>"
                     sed -ne '/BEGIN OpenVPN Static key/,$ p' /etc/openvpn/server/tc.key
                     echo "</tls-crypt>"
+                    echo "proto $protocol"
+                    echo "remote ${server_ip} $port"
                     mssfix 1350
-                    } > /home/ubuntu/$client_name.ovpn
+                    } > /home/ubuntu/${client_name}_${config_suffix}.ovpn
                 }
                 
                 # Check if client name is provided
@@ -69,6 +89,7 @@ Resources:
                 
                 client_name="$1"
                 client_name=$(sed 's/[^0-9a-zA-Z_-]/_/g' <<< "$client_name")
+                server_ip=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
                 
                 # Check if client already exists
                 if [ -e "/etc/openvpn/server/easy-rsa/pki/issued/$client_name.crt" ]; then
@@ -79,9 +100,60 @@ Resources:
                 cd /etc/openvpn/server/easy-rsa/
                 ./easyrsa --batch --days=3650 build-client-full "$client_name" nopass
                 
-                # Generate the OVPN file
-                new_client
-                echo "Client $client_name added. Configuration is available at ~/$client_name.ovpn"
+                # Generate the OVPN file for TCP
+                new_client "tcp" "443" "tcp"
+
+                echo "Client $client_name added. Configuration is available at ~/${client_name}_tcp.ovpn"
+              mode: '000755'
+        configure_shadowsocks:
+          commands:
+            01_configure_shadowsocks:
+              command: |
+                cat <<EOF > /etc/shadowsocks-libev/config.json
+                {
+                  "server":"0.0.0.0",
+                  "server_port":8388,
+                  "local_port":1080,
+                  "password":"your_password_here",
+                  "timeout":60,
+                  "method":"aes-256-gcm"
+                }
+                EOF
+                systemctl enable shadowsocks-libev
+                systemctl start shadowsocks-libev
+        create_shadowsocks_script:
+          files:
+            "/usr/local/bin/create-shadowsocks-config.sh":
+              content: |
+                #!/bin/bash
+                new_shadowsocks_client () {
+                    local client_name="$1"
+                    {
+                    echo "{"
+                    echo "  \"server\": \"${server_ip}\"," 
+                    echo "  \"server_port\": 8388," 
+                    echo "  \"local_port\": 1080," 
+                    echo "  \"password\": \"your_password_here\"," 
+                    echo "  \"timeout\": 60," 
+                    echo "  \"method\": \"aes-256-gcm\""
+                    echo "}"
+                    } > /home/ubuntu/${client_name}_shadowsocks.json
+                }
+                
+                # Check if client name is provided
+                if [ -z "$1" ]; then
+                    echo "Usage: $0 <client_name>"
+                    exit 1
+                fi
+                
+                client_name="$1"
+                client_name=$(sed 's/[^0-9a-zA-Z_-]/_/g' <<< "$client_name")
+                server_ip=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+                
+                # Generate the Shadowsocks configuration file
+                new_shadowsocks_client "$client_name"
+                
+                echo "Shadowsocks client configuration is available at ~/${client_name}_shadowsocks.json"
               mode: '000755'
       AWS::CloudFormation::Authentication:
         S3Auth:
@@ -103,13 +175,15 @@ Resources:
             pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
             /usr/local/bin/cfn-init -v --stack ${AWS::StackName} --resource OpenVPNServer --region ${AWS::Region}
             /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource OpenVPNServer --region ${AWS::Region}
-            # After OpenVPN installation, create a client config (this runs on startup)
+            # After OpenVPN installation, create client configurations (this runs on startup)
             /usr/local/bin/create-ovpn-client.sh macbook1
             /usr/local/bin/create-ovpn-client.sh macbook2 
             /usr/local/bin/create-ovpn-client.sh macbook3
             /usr/local/bin/create-ovpn-client.sh phone1
             /usr/local/bin/create-ovpn-client.sh phone2 
             /usr/local/bin/create-ovpn-client.sh phone3
+            # Create Shadowsocks configurations
+            /usr/local/bin/create-shadowsocks-config.sh shadowsocks
   OpenVPNSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -119,13 +193,13 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
-        - IpProtocol: udp
-          FromPort: 1194
-          ToPort: 1194
-          CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8388
+          ToPort: 8388
           CidrIp: 0.0.0.0/0
 
 Outputs:
@@ -139,13 +213,7 @@ Outputs:
     Description: How to connect to the server
     Value: !Sub |
       SSH to your instance using:
-      ssh -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}
+      ssh -i ~/.ssh/${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}
       SCP the files to your device:
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook1.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook2.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook3.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone1.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone2.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone3.ovpn .
-
-      
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/*.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/*.json .
