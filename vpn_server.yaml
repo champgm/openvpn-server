@@ -6,13 +6,11 @@ Parameters:
     Type: String
     Description: EC2 instance type
     AllowedValues: [t2.micro, t3.micro, t3a.micro, t2.small, t3.small, t3a.small]
-    ConstraintDescription: Must be a valid EC2 instance type.
-    Default: t2.micro
+    Default: t3a.micro
 
   KeyPairName:
     Description: Name of an existing EC2 KeyPair to SSH into the instance
     Type: AWS::EC2::KeyPair::KeyName
-    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
     Default: vpn-west-2
 
   LatestAmiId:
@@ -22,6 +20,74 @@ Parameters:
 Resources:
   OpenVPNServer:
     Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - install_openvpn
+            - create_ovpn_script
+        install_openvpn:
+          packages:
+            apt:
+              wget: []
+              openvpn: []
+              easy-rsa: []
+          commands:
+            01_download_openvpn_script:
+              command: "wget https://git.io/vpn -O /tmp/openvpn-install.sh && chmod +x /tmp/openvpn-install.sh"
+            02_run_openvpn_installer:
+              command: "/tmp/openvpn-install.sh --auto"
+        create_ovpn_script:
+          files:
+            "/usr/local/bin/create-ovpn-client.sh":
+              content: |
+                #!/bin/bash
+                new_client () {
+                    {
+                    cat /etc/openvpn/server/client-common.txt
+                    echo "<ca>"
+                    cat /etc/openvpn/server/easy-rsa/pki/ca.crt
+                    echo "</ca>"
+                    echo "<cert>"
+                    sed -ne '/BEGIN CERTIFICATE/,$ p' /etc/openvpn/server/easy-rsa/pki/issued/"$client_name".crt
+                    echo "</cert>"
+                    echo "<key>"
+                    cat /etc/openvpn/server/easy-rsa/pki/private/"$client_name".key
+                    echo "</key>"
+                    echo "<tls-crypt>"
+                    sed -ne '/BEGIN OpenVPN Static key/,$ p' /etc/openvpn/server/tc.key
+                    echo "</tls-crypt>"
+                    mssfix 1350
+                    } > /home/ubuntu/$client_name.ovpn
+                }
+                
+                # Check if client name is provided
+                if [ -z "$1" ]; then
+                    echo "Usage: $0 <client_name>"
+                    exit 1
+                fi
+                
+                client_name="$1"
+                client_name=$(sed 's/[^0-9a-zA-Z_-]/_/g' <<< "$client_name")
+                
+                # Check if client already exists
+                if [ -e "/etc/openvpn/server/easy-rsa/pki/issued/$client_name.crt" ]; then
+                    echo "Client $client_name already exists!"
+                    exit 1
+                fi
+                
+                cd /etc/openvpn/server/easy-rsa/
+                ./easyrsa --batch --days=3650 build-client-full "$client_name" nopass
+                
+                # Generate the OVPN file
+                new_client
+                echo "Client $client_name added. Configuration is available at ~/$client_name.ovpn"
+              mode: '000755'
+      AWS::CloudFormation::Authentication:
+        S3Auth:
+          type: "S3"
+          buckets: ["your-bucket-name"]
+
     Properties:
       InstanceType: !Ref InstanceType
       KeyName: !Ref KeyPairName
@@ -29,14 +95,21 @@ Resources:
       SecurityGroupIds:
         - !Ref OpenVPNSecurityGroup
       UserData:
-        Fn::Base64: |
-          #!/bin/bash
-          apt-get update -y
-          apt-get install -y wget
-          wget https://git.io/vpn -O openvpn-install.sh
-          chmod +x openvpn-install.sh
-          ./openvpn-install.sh --auto
-
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            apt-get update -y
+            apt-get install -y python3-pip python3-setuptools heat-cfntools
+            pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+            /usr/local/bin/cfn-init -v --stack ${AWS::StackName} --resource OpenVPNServer --region ${AWS::Region}
+            /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource OpenVPNServer --region ${AWS::Region}
+            # After OpenVPN installation, create a client config (this runs on startup)
+            /usr/local/bin/create-ovpn-client.sh macbook1
+            /usr/local/bin/create-ovpn-client.sh macbook2 
+            /usr/local/bin/create-ovpn-client.sh macbook3
+            /usr/local/bin/create-ovpn-client.sh phone1
+            /usr/local/bin/create-ovpn-client.sh phone2 
+            /usr/local/bin/create-ovpn-client.sh phone3
   OpenVPNSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -66,4 +139,13 @@ Outputs:
     Description: How to connect to the server
     Value: !Sub |
       SSH to your instance using:
-      ssh -i <YourPrivateKey.pem> ubuntu@${OpenVPNServer.PublicIp}
+      ssh -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}
+      SCP the files to your device:
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook1.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook2.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook3.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone1.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone2.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone3.ovpn .
+
+      
