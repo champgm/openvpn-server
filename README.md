@@ -6,6 +6,8 @@
 ## Deploy
 You should just be able to run `python .\deploy.py` but I guess the python script has some dependencies... I didn't think of that. Someone should probably add a `requirements.txt` file and update the doc. Oh damn, the script doesn't take input for the keypair name either... that should be fixed too.
 
+*NOTE*: deployment will take some time, especially the Cloudformation bootstrap thing. Give it some time, or SSH in and check its status with the troubleshooting commands.
+
 ## Troubleshooting
 Once logged into the server, these commands can help you figure out what's going wrong.
 
@@ -17,6 +19,11 @@ sudo cat /var/log/cfn-init-cmd.log
 
 ### Openvpn service startup:
 ```
-systemctl status openvpn@server.service
-journalctl -xeu openvpn@server.service
+systemctl status openvpn-server@server.service
+journalctl -xeu openvpn-server@server.service
+```
+
+### Openvpn configuration
+```
+/etc/openvpn/server/server.conf
 ```

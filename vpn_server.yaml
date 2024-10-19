@@ -38,16 +38,20 @@ Resources:
               shadowsocks-libev: []
           commands:
             01_download_openvpn_script:
-              command: "wget https://git.io/vpn -O /tmp/openvpn-install.sh && chmod +x /tmp/openvpn-install.sh"
+              command: |
+                wget https://git.io/vpn -O /tmp/openvpn-install.sh
+                sed -i 's/protocol=udp/protocol=tcp/' /tmp/openvpn-install.sh
+                sed -i 's/port="1194"/port="443"/' /tmp/openvpn-install.sh
+                chmod +x /tmp/openvpn-install.sh
             02_run_openvpn_installer:
-              command: "/tmp/openvpn-install.sh --auto --protocol udp --port 1194 --protocol tcp --port 443"
+              command: "/tmp/openvpn-install.sh --auto --protocol tcp --port 443"
             03_optimize_openvpn_config:
               command: |
                 echo 'sndbuf 393216' >> /etc/openvpn/server/server.conf
                 echo 'rcvbuf 393216' >> /etc/openvpn/server/server.conf
                 echo 'mssfix 1350' >> /etc/openvpn/server/server.conf
                 echo 'tun-mtu 1500' >> /etc/openvpn/server/server.conf
-                systemctl restart openvpn@server
+                systemctl restart openvpn-server@server.service
         create_ovpn_script:
           files:
             "/usr/local/bin/create-ovpn-client.sh":
@@ -96,12 +100,10 @@ Resources:
                 cd /etc/openvpn/server/easy-rsa/
                 ./easyrsa --batch --days=3650 build-client-full "$client_name" nopass
                 
-                # Generate the OVPN file for UDP
-                new_client "udp" "1194" "udp"
                 # Generate the OVPN file for TCP
                 new_client "tcp" "443" "tcp"
 
-                echo "Client $client_name added. Configuration is available at ~/${client_name}_udp.ovpn and ~/${client_name}_tcp.ovpn"
+                echo "Client $client_name added. Configuration is available at ~/${client_name}_tcp.ovpn"
               mode: '000755'
         configure_shadowsocks:
           commands:
@@ -181,12 +183,7 @@ Resources:
             /usr/local/bin/create-ovpn-client.sh phone2 
             /usr/local/bin/create-ovpn-client.sh phone3
             # Create Shadowsocks configurations
-            /usr/local/bin/create-shadowsocks-config.sh macbook1
-            /usr/local/bin/create-shadowsocks-config.sh macbook2
-            /usr/local/bin/create-shadowsocks-config.sh macbook3
-            /usr/local/bin/create-shadowsocks-config.sh phone1
-            /usr/local/bin/create-shadowsocks-config.sh phone2
-            /usr/local/bin/create-shadowsocks-config.sh phone3
+            /usr/local/bin/create-shadowsocks-config.sh shadowsocks
   OpenVPNSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -199,10 +196,6 @@ Resources:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: udp
-          FromPort: 1194
-          ToPort: 1194
           CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
           FromPort: 443
@@ -230,21 +223,5 @@ Outputs:
       SSH to your instance using:
       ssh -i ~/.ssh/${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}
       SCP the files to your device:
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook1_udp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook1_tcp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook2_udp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook2_tcp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook3_udp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook3_tcp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone1_udp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone1_tcp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone2_udp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone2_tcp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone3_udp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone3_tcp.ovpn .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook1_shadowsocks.json .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook2_shadowsocks.json .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/macbook3_shadowsocks.json .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone1_shadowsocks.json .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone2_shadowsocks.json .
-      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/phone3_shadowsocks.json .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/*.ovpn .
+      scp -i ~\.ssh\${KeyPairName}.pem ubuntu@${OpenVPNServer.PublicIp}:~/*.json .
