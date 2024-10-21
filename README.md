@@ -4,7 +4,7 @@
 * Set up your AWS account on the machine where you'll do your deployment.
 
 ## Deploy
-You should just be able to run `python .\deploy.py` but I guess the python script has some dependencies... I didn't think of that. Someone should probably add a `requirements.txt` file and update the doc. Oh damn, the script doesn't take input for the keypair name either... that should be fixed too.
+You should just be able to run `python .\deploy.py` but I guess the python script has some dependencies... I didn't think of that. Someone should probably add a `requirements.txt` file and update the doc.
 
 *NOTE*: deployment will take some time, especially the Cloudformation bootstrap thing. Give it some time, or SSH in and check its status with the troubleshooting commands.
 
